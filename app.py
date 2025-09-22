@@ -27,16 +27,7 @@ models = [
 ]
 model = st.sidebar.selectbox("選擇模型", models, index=0)
 
-# 根據模型動態配置 style 和 quality
-styles_dict = {
-    "flux.1-schnell": ["vivid", "natural", "fantasy", "日本漫畫", "白黑", "水彩", "素描", "油畫"],
-    "flux.1.1-por": ["cinematic", "photographic", "日本漫畫", "白黑", "水彩", "素描", "油畫"],
-    "flux.latest": ["modern", "retro", "日本漫畫", "白黑", "水彩", "素描", "油畫"],
-    "flux.1-krea-dev": ["style1", "style2", "style3", "日本漫畫", "白黑", "水彩", "素描", "油畫"],
-    "flux.1-kontext-pro": ["styleA", "styleB", "日本漫畫", "白黑", "水彩", "素描", "油畫"],
-    "flux.1-kontext-max": ["styleX", "styleY", "日本漫畫", "白黑", "水彩", "素描", "油畫"]
-}
-
+# 品質字典
 qualities_dict = {
     "flux.1-schnell": ["standard", "hd", "ultra"],
     "flux.1.1-por": ["hd", "ultra"],
@@ -46,18 +37,17 @@ qualities_dict = {
     "flux.1-kontext-max": ["qualityX", "qualityY"]
 }
 
-if model not in styles_dict:
-    styles_dict[model] = ["default_style"]
 if model not in qualities_dict:
     qualities_dict[model] = ["default_quality"]
 
-style = st.sidebar.selectbox("選擇風格", styles_dict[model])
 quality = st.sidebar.selectbox("選擇品質", qualities_dict[model])
 
+# 圖像尺寸和張數
 sizes = ["1024x1024", "1024x1792", "1792x1024", "512x512", "256x256"]
 size = st.sidebar.selectbox("圖像尺寸", sizes, index=0)
 n = st.sidebar.slider("生成圖片數量", 1, 5, 1)
 
+# 提示詞輸入
 st.header("📝 輸入提示詞")
 prompt = st.text_area("描述您想生成的圖像", value="A cute cat wearing a wizard hat", height=120)
 
@@ -83,8 +73,8 @@ if btn_generate:
                     prompt=prompt,
                     n=n,
                     size=size,
-                    style=style,
                     quality=quality
+                    # 不帶style參數
                 )
 
                 images = []
@@ -106,6 +96,7 @@ if btn_generate:
         except Exception as e:
             st.error(f"生成失敗: {str(e)}")
 
+# 圖像顯示 (同之前，包含下載功能)
 if st.session_state.generated_images:
     st.header("🖼️ 生成的圖像")
     num_columns = min(n, 4)
@@ -130,7 +121,6 @@ if st.session_state.generated_images:
                 img_byte_arr = io.BytesIO()
                 img.save(img_byte_arr, format='PNG')
                 zip_file.writestr(f"image_{i + 1}.png", img_byte_arr.getvalue())
-
         zip_buffer.seek(0)
         st.download_button(
             label="點擊下載 ZIP 文件",
@@ -139,6 +129,7 @@ if st.session_state.generated_images:
             mime="application/zip"
         )
 
+# 歷史記錄展示
 if st.checkbox("顯示歷史生成記錄"):
     st.header("🕘 生成歷史記錄")
     for record in reversed(st.session_state.image_records):
