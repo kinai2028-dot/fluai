@@ -1,4 +1,4 @@
-import streamlit as st
+ import streamlit as st
 from openai import OpenAI
 from PIL import Image
 import requests
@@ -9,512 +9,621 @@ from typing import Dict, List, Optional, Tuple
 import time
 import random
 import json
+import traceback
 
-# 設定頁面配置
+# 设定页面配置
 st.set_page_config(
-    page_title="Flux AI 圖像生成器 Pro", 
+    page_title="Flux AI 图像生成器 Pro", 
     page_icon="🎨", 
     layout="wide"
 )
 
-# 修復的錯誤處理類
+# 增强的错误处理类
 class FluxAPIErrorHandler:
     def __init__(self):
         self.error_patterns = {
             'provider_500': {
-                'keywords': ['unexpected provider error', '500'],
+                'keywords': ['unexpected provider error', '500', 'internal server error'],
                 'type': 'provider_error',
                 'severity': 'high',
                 'retry_recommended': True,
                 'solutions': [
-                    '服務器臨時故障，系統會自動重試',
-                    '嘗試切換到其他可用模型',
-                    '簡化提示詞內容',
-                    '檢查 API 提供商服務狀態'
+                    '服务器临时故障，系统会自动重试',
+                    '尝试切换到其他可用模型',
+                    '简化提示词内容',
+                    '检查 API 提供商服务状态'
                 ]
             },
             'auth_error': {
-                'keywords': ['401', '403', 'unauthorized', 'forbidden'],
+                'keywords': ['401', '403', 'unauthorized', 'forbidden', 'invalid api key', 'authentication'],
                 'type': 'authentication',
                 'severity': 'critical',
                 'retry_recommended': False,
                 'solutions': [
-                    '檢查 API 密鑰是否正確',
-                    '驗證帳戶權限和餘額',
-                    '確認 API 端點配置',
-                    '重新生成 API 密鑰'
+                    '检查 API 密钥是否正确',
+                    '验证账户权限和余额',
+                    '确认 API 端点配置',
+                    '重新生成 API 密钥'
                 ]
             },
             'rate_limit': {
-                'keywords': ['429', 'rate limit', 'too many requests'],
+                'keywords': ['429', 'rate limit', 'too many requests', 'quota exceeded'],
                 'type': 'rate_limiting',
                 'severity': 'medium',
                 'retry_recommended': True,
                 'solutions': [
-                    '請求頻率過高，正在等待重試',
-                    '考慮減少並發請求',
-                    '升級到更高級別的 API 計劃',
-                    '使用指數退避策略'
+                    '请求频率过高，正在等待重试',
+                    '考虑减少并发请求',
+                    '升级到更高级别的 API 计划',
+                    '使用指数退避策略'
                 ]
             },
             'model_error': {
-                'keywords': ['404', 'model not found', 'invalid model'],
+                'keywords': ['404', 'model not found', 'invalid model', 'model does not exist'],
                 'type': 'model_unavailable',
                 'severity': 'high',
                 'retry_recommended': False,
                 'solutions': [
-                    '選擇的模型不可用',
-                    '切換到已驗證的可用模型',
-                    '檢查模型名稱拼寫',
-                    '聯繫 API 提供商確認模型狀態'
+                    '选择的模型不可用',
+                    '切换到已验证的可用模型',
+                    '检查模型名称拼写',
+                    '联系 API 提供商确认模型状态'
                 ]
             },
             'network_error': {
-                'keywords': ['timeout', 'connection', 'network', 'dns'],
+                'keywords': ['timeout', 'connection', 'network', 'dns', 'ssl', 'certificate'],
                 'type': 'network_issue',
                 'severity': 'medium',
                 'retry_recommended': True,
                 'solutions': [
-                    '網絡連接問題，正在重試',
-                    '檢查網絡連接穩定性',
-                    '嘗試更換網絡環境',
-                    '檢查防火牆和代理設置'
+                    '网络连接问题，正在重试',
+                    '检查网络连接稳定性',
+                    '尝试更换网络环境',
+                    '检查防火墙和代理设置'
+                ]
+            },
+            'parameter_error': {
+                'keywords': ['invalid parameter', 'bad request', '400', 'validation error', 'malformed'],
+                'type': 'parameter_invalid',
+                'severity': 'high',
+                'retry_recommended': False,
+                'solutions': [
+                    '请求参数无效',
+                    '检查图像尺寸设置',
+                    '验证提示词格式',
+                    '确认生成数量在允许范围内'
+                ]
+            },
+            'content_policy': {
+                'keywords': ['content policy', 'inappropriate', 'unsafe', 'filtered', 'blocked'],
+                'type': 'content_violation',
+                'severity': 'medium',
+                'retry_recommended': False,
+                'solutions': [
+                    '提示词违反内容政策',
+                    '修改提示词避免敏感内容',
+                    '使用更温和的描述',
+                    '参考平台使用指南'
+                ]
+            },
+            'openai_client_error': {
+                'keywords': ['openai', 'client error', 'initialization failed', 'api client'],
+                'type': 'client_initialization',
+                'severity': 'critical',
+                'retry_recommended': False,
+                'solutions': [
+                    'OpenAI 客户端初始化失败',
+                    '检查 API 密钥格式',
+                    '验证 API 端点 URL',
+                    '重新配置 API 设置'
                 ]
             }
         }
     
-    def analyze_error(self, error_msg: str) -> Dict:
-        """分析錯誤並提供詳細診斷 - 修復版本"""
-        # 確保輸入是字符串
+    def analyze_error(self, error_msg: str, context: Dict = None) -> Dict:
+        """分析错误并提供详细诊断 - 增强版本"""
         if not isinstance(error_msg, str):
             error_msg = str(error_msg)
         
         error_msg_lower = error_msg.lower()
         
-        # 搜索匹配的錯誤模式
-        for pattern_name, pattern_info in self.error_patterns.items():
-            try:
-                if any(keyword in error_msg_lower for keyword in pattern_info.get('keywords', [])):
-                    return {
-                        'pattern': pattern_name,
-                        'type': pattern_info.get('type', 'unknown'),
-                        'severity': pattern_info.get('severity', 'medium'),
-                        'retry_recommended': pattern_info.get('retry_recommended', True),
-                        'solutions': pattern_info.get('solutions', ['嘗試重新生成']),
-                        'original_error': error_msg[:500]  # 限制長度
-                    }
-            except Exception as e:
-                st.warning(f"錯誤模式匹配失敗: {str(e)}")
-                continue
-        
-        # 未知錯誤的默認處理 - 確保所有必要鍵存在
-        return {
+        # 记录原始错误和上下文
+        analysis_result = {
             'pattern': 'unknown',
             'type': 'unknown_error',
             'severity': 'medium',
             'retry_recommended': True,
-            'solutions': [
-                '未知錯誤，嘗試重新生成',
-                '檢查所有配置設置',
-                '簡化提示詞內容',
-                '聯繫技術支持'
-            ],
-            'original_error': error_msg[:500]  # 限制長度
+            'solutions': ['尝试重新生成', '检查配置设置'],
+            'original_error': error_msg[:1000],
+            'context': context or {},
+            'analysis_timestamp': datetime.datetime.now().isoformat()
         }
+        
+        # 搜索匹配的错误模式
+        for pattern_name, pattern_info in self.error_patterns.items():
+            try:
+                keywords = pattern_info.get('keywords', [])
+                if any(keyword in error_msg_lower for keyword in keywords):
+                    analysis_result.update({
+                        'pattern': pattern_name,
+                        'type': pattern_info.get('type', 'unknown'),
+                        'severity': pattern_info.get('severity', 'medium'),
+                        'retry_recommended': pattern_info.get('retry_recommended', True),
+                        'solutions': pattern_info.get('solutions', ['尝试重新生成']),
+                        'matched_keywords': [kw for kw in keywords if kw in error_msg_lower]
+                    })
+                    st.info(f"🔍 匹配到错误模式: {pattern_name}")
+                    return analysis_result
+                    
+            except Exception as match_error:
+                st.warning(f"错误模式匹配失败 ({pattern_name}): {str(match_error)}")
+                continue
+        
+        # 特殊错误检测
+        if 'unexpected error in retry loop' in error_msg_lower:
+            analysis_result.update({
+                'pattern': 'retry_loop_error',
+                'type': 'retry_mechanism_failure',
+                'severity': 'high',
+                'retry_recommended': False,
+                'solutions': [
+                    '重试机制本身出现问题',
+                    '重置错误状态和客户端',
+                    '切换到最稳定的模型',
+                    '减少生成复杂度'
+                ]
+            })
+        
+        st.warning(f"⚠️ 未识别的错误模式: {error_msg[:100]}...")
+        return analysis_result
 
-# 增強的 API 客戶端類 - 添加錯誤處理
+# 增强的 API 客户端类
 class ResilientFluxClient:
     def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
         self.base_url = base_url
+        self.client = None
+        self.initialization_error = None
+        
         try:
             self.client = OpenAI(api_key=api_key, base_url=base_url)
+            st.success("✅ OpenAI 客户端初始化成功")
         except Exception as e:
-            st.error(f"初始化 OpenAI 客戶端失敗: {str(e)}")
-            self.client = None
+            self.initialization_error = str(e)
+            st.error(f"❌ OpenAI 客户端初始化失败: {str(e)}")
             
         self.error_handler = FluxAPIErrorHandler()
         self.session_stats = {
             'total_requests': 0,
             'successful_requests': 0,
             'failed_requests': 0,
-            'retry_attempts': 0
+            'retry_attempts': 0,
+            'error_types': {},
+            'last_errors': []
         }
+    
+    def validate_parameters(self, **params) -> Tuple[bool, str]:
+        """验证生成参数"""
+        try:
+            model = params.get('model')
+            prompt = params.get('prompt', '')
+            n = params.get('n', 1)
+            size = params.get('size', '1024x1024')
+            
+            # 检查必需参数
+            if not model:
+                return False, "缺少模型参数"
+            
+            if not prompt or len(prompt.strip()) == 0:
+                return False, "提示词不能为空"
+            
+            if len(prompt) > 4000:
+                return False, "提示词过长，请缩短至4000字符以内"
+            
+            # 检查数量
+            if not isinstance(n, int) or n < 1 or n > 4:
+                return False, "生成数量必须在1-4之间"
+            
+            # 检查尺寸格式
+            valid_sizes = ['1024x1024', '1152x896', '896x1152', '1344x768', '768x1344']
+            if size not in valid_sizes:
+                return False, f"无效的图像尺寸，支持: {', '.join(valid_sizes)}"
+            
+            return True, "参数验证通过"
+            
+        except Exception as e:
+            return False, f"参数验证错误: {str(e)}"
+    
+    def log_error(self, error_type: str, error_msg: str, attempt: int, model: str):
+        """记录错误信息"""
+        try:
+            error_entry = {
+                'timestamp': datetime.datetime.now().isoformat(),
+                'type': error_type,
+                'message': error_msg[:500],  # 限制长度
+                'attempt': attempt,
+                'model': model
+            }
+            
+            self.session_stats['last_errors'].append(error_entry)
+            
+            # 只保留最近10个错误
+            if len(self.session_stats['last_errors']) > 10:
+                self.session_stats['last_errors'] = self.session_stats['last_errors'][-10:]
+            
+            # 更新错误类型统计
+            if error_type in self.session_stats['error_types']:
+                self.session_stats['error_types'][error_type] += 1
+            else:
+                self.session_stats['error_types'][error_type] = 1
+                
+        except Exception as log_error:
+            st.warning(f"记录错误信息失败: {str(log_error)}")
     
     def generate_with_resilience(self, **params) -> Tuple[bool, any, Dict]:
         """
-        具有彈性的圖像生成方法 - 增強錯誤處理
-        返回 (成功狀態, 結果, 診斷信息)
+        具有弹性的图像生成方法 - 完全重写
         """
-        # 檢查客戶端是否正常初始化
+        # 初始检查
         if self.client is None:
             error_result = {
-                'type': 'client_error',
+                'type': 'client_initialization',
                 'severity': 'critical',
                 'retry_recommended': False,
-                'solutions': ['重新配置 API 客戶端', '檢查 API 密鑰和端點'],
-                'original_error': 'OpenAI 客戶端初始化失敗'
+                'solutions': ['重新配置 API 客户端', '检查 API 密钥和端点'],
+                'original_error': self.initialization_error or 'OpenAI 客户端未初始化'
             }
-            diagnostic_info = {
-                'status': 'failed',
-                'attempts': 0,
-                'error_type': 'client_initialization',
-                'message': '客戶端初始化失敗'
-            }
-            return False, error_result, diagnostic_info
+            return False, error_result, {'status': 'failed', 'attempts': 0, 'error_type': 'client_init'}
         
+        # 参数验证
+        param_valid, param_msg = self.validate_parameters(**params)
+        if not param_valid:
+            error_result = {
+                'type': 'parameter_invalid',
+                'severity': 'high',
+                'retry_recommended': False,
+                'solutions': [f'参数验证失败: {param_msg}', '检查输入参数', '使用推荐的参数设置'],
+                'original_error': param_msg
+            }
+            return False, error_result, {'status': 'failed', 'attempts': 0, 'error_type': 'param_validation'}
+        
+        # 设置重试参数
         max_retries = 3
         base_delay = 2
         fallback_models = ['flux.1-schnell', 'flux.1-krea-dev', 'flux.1.1-pro']
         original_model = params.get('model', 'flux.1-schnell')
+        current_params = params.copy()
         
-        # 更新統計
+        # 更新统计
         self.session_stats['total_requests'] += 1
         
-        # 主要生成邏輯
+        st.info(f"🚀 开始生成: 模型={original_model}, 提示词长度={len(params.get('prompt', ''))}")
+        
+        # 重试循环
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
                     self.session_stats['retry_attempts'] += 1
-                    st.info(f"🔄 重試生成 (第 {attempt + 1}/{max_retries} 次)")
+                    st.info(f"🔄 第 {attempt + 1}/{max_retries} 次重试...")
                 
-                # 嘗試生成
-                response = self.client.images.generate(**params)
+                # 显示当前参数
+                with st.expander(f"📋 第 {attempt + 1} 次尝试参数"):
+                    st.json({
+                        'model': current_params.get('model'),
+                        'prompt_length': len(current_params.get('prompt', '')),
+                        'n': current_params.get('n'),
+                        'size': current_params.get('size')
+                    })
                 
-                # 成功
+                # 执行生成
+                st.info(f"📡 调用 API...")
+                response = self.client.images.generate(**current_params)
+                
+                # 成功处理
                 self.session_stats['successful_requests'] += 1
+                st.success(f"✅ 生成成功! (第 {attempt + 1} 次尝试)")
+                
                 return True, response, {
                     'status': 'success',
                     'attempts': attempt + 1,
-                    'model_used': params.get('model'),
-                    'message': f'成功生成 (第 {attempt + 1} 次嘗試)'
+                    'model_used': current_params.get('model'),
+                    'message': f'成功生成 (尝试 {attempt + 1}/{max_retries})',
+                    'final_params': current_params
                 }
                 
             except Exception as e:
                 error_msg = str(e)
+                error_context = {
+                    'attempt': attempt + 1,
+                    'max_retries': max_retries,
+                    'model': current_params.get('model'),
+                    'params': {k: v for k, v in current_params.items() if k != 'prompt'}  # 不记录完整提示词
+                }
                 
-                try:
-                    error_analysis = self.error_handler.analyze_error(error_msg)
-                except Exception as analysis_error:
-                    # 如果錯誤分析本身失敗，創建一個基本的錯誤結果
-                    st.warning(f"錯誤分析失敗: {str(analysis_error)}")
-                    error_analysis = {
-                        'pattern': 'analysis_failed',
-                        'type': 'error_handler_failure',
-                        'severity': 'medium',
-                        'retry_recommended': True,
-                        'solutions': ['嘗試重新生成', '檢查系統狀態'],
-                        'original_error': error_msg[:500]
-                    }
+                # 记录错误
+                self.log_error('generation_error', error_msg, attempt + 1, current_params.get('model'))
                 
-                st.warning(f"⚠️ 第 {attempt + 1} 次嘗試失敗: {error_analysis.get('type', 'unknown')}")
+                # 分析错误
+                error_analysis = self.error_handler.analyze_error(error_msg, error_context)
                 
-                # 特殊處理 500 錯誤
-                if error_analysis.get('pattern') == 'provider_500':
-                    if attempt < max_retries - 1:
-                        # 指數退避 + 隨機延遲
-                        delay = base_delay * (2 ** attempt) + random.uniform(1, 3)
-                        
-                        st.info(f"⏱️ 檢測到提供商錯誤，{delay:.1f} 秒後重試...")
-                        
-                        # 顯示進度條
-                        try:
-                            progress_bar = st.progress(0)
-                            for i in range(int(delay)):
-                                progress_bar.progress((i + 1) / delay)
-                                time.sleep(1)
-                            progress_bar.empty()
-                        except Exception:
-                            # 如果進度條失敗，就簡單等待
-                            time.sleep(delay)
-                        
-                        continue
+                st.error(f"❌ 第 {attempt + 1} 次尝试失败: {error_analysis.get('type', 'unknown')}")
+                st.code(f"错误详情: {error_msg[:200]}...")
                 
-                # 模型回退策略
-                elif error_analysis.get('pattern') == 'model_error' and attempt < max_retries - 1:
-                    available_fallbacks = [m for m in fallback_models if m != params.get('model')]
-                    if available_fallbacks:
-                        fallback_model = available_fallbacks[0]
-                        params['model'] = fallback_model
-                        st.info(f"🔄 嘗試回退模型: {fallback_model}")
-                        continue
-                
-                # 速率限制處理
-                elif error_analysis.get('pattern') == 'rate_limit' and attempt < max_retries - 1:
-                    delay = base_delay * (3 ** attempt) + random.uniform(2, 5)  # 更長延遲
-                    st.warning(f"🚦 遇到速率限制，{delay:.1f} 秒後重試...")
-                    time.sleep(delay)
-                    continue
-                
-                # 不建議重試的錯誤
-                elif not error_analysis.get('retry_recommended', True):
+                # 决定是否继续重试
+                if attempt >= max_retries - 1:
+                    # 最后一次尝试失败
+                    st.error("💥 所有重试尝试均已失败")
                     self.session_stats['failed_requests'] += 1
-                    return False, error_analysis, {
-                        'status': 'failed',
-                        'attempts': attempt + 1,
-                        'error_type': error_analysis.get('type', 'unknown'),
-                        'no_retry_reason': '錯誤類型不適合重試'
-                    }
-                
-                # 最後一次嘗試失敗
-                elif attempt == max_retries - 1:
-                    self.session_stats['failed_requests'] += 1
+                    
                     return False, error_analysis, {
                         'status': 'failed',
                         'attempts': max_retries,
-                        'error_type': error_analysis.get('type', 'unknown'),
-                        'message': '所有重試嘗試均失敗'
+                        'error_type': error_analysis.get('type'),
+                        'message': '达到最大重试次数',
+                        'all_errors': self.session_stats['last_errors'][-max_retries:]
                     }
                 
-                # 其他可重試錯誤
-                else:
-                    delay = base_delay * (2 ** attempt) + random.uniform(0, 2)
-                    st.info(f"⏳ {delay:.1f} 秒後重試...")
+                # 根据错误类型决定重试策略
+                pattern = error_analysis.get('pattern', 'unknown')
+                
+                if pattern == 'provider_500':
+                    # 500错误 - 指数退避重试
+                    delay = base_delay * (2 ** attempt) + random.uniform(1, 3)
+                    st.warning(f"🔄 检测到服务器错误，{delay:.1f} 秒后重试...")
+                    
+                    progress_bar = st.progress(0)
+                    for i in range(int(delay * 2)):  # 更细粒度的进度
+                        progress_bar.progress((i + 1) / (delay * 2))
+                        time.sleep(0.5)
+                    progress_bar.empty()
+                    continue
+                
+                elif pattern == 'model_error' and attempt < max_retries - 1:
+                    # 模型错误 - 尝试回退模型
+                    current_model = current_params.get('model')
+                    available_fallbacks = [m for m in fallback_models if m != current_model]
+                    
+                    if available_fallbacks:
+                        fallback_model = available_fallbacks[0]
+                        current_params['model'] = fallback_model
+                        st.info(f"🎯 尝试回退模型: {current_model} → {fallback_model}")
+                        continue
+                    else:
+                        st.warning("⚠️ 没有可用的回退模型")
+                
+                elif pattern == 'rate_limit':
+                    # 速率限制 - 长延迟重试
+                    delay = base_delay * (4 ** attempt) + random.uniform(5, 10)
+                    st.warning(f"🚦 遇到速率限制，{delay:.1f} 秒后重试...")
                     time.sleep(delay)
                     continue
+                
+                elif pattern == 'parameter_error':
+                    # 参数错误 - 尝试简化参数
+                    if current_params.get('n', 1) > 1:
+                        current_params['n'] = 1
+                        st.info("🔧 简化参数: 减少生成数量到1")
+                        continue
+                    elif current_params.get('size') != '1024x1024':
+                        current_params['size'] = '1024x1024'
+                        st.info("🔧 简化参数: 使用标准尺寸")
+                        continue
+                
+                elif not error_analysis.get('retry_recommended', True):
+                    # 不建议重试的错误
+                    st.error("🛑 检测到不适合重试的错误")
+                    self.session_stats['failed_requests'] += 1
+                    
+                    return False, error_analysis, {
+                        'status': 'failed',
+                        'attempts': attempt + 1,
+                        'error_type': error_analysis.get('type'),
+                        'no_retry_reason': '错误类型不适合重试'
+                    }
+                
+                # 默认重试策略
+                delay = base_delay * (1.5 ** attempt) + random.uniform(0, 2)
+                st.info(f"⏳ {delay:.1f} 秒后进行默认重试...")
+                time.sleep(delay)
+                continue
         
-        # 應該不會到達這裡，但為了安全起見
-        self.session_stats['failed_requests'] += 1
-        fallback_error = {
-            'type': 'unexpected_failure',
-            'severity': 'high',
-            'retry_recommended': True,
-            'solutions': ['聯繫技術支持', '檢查系統日誌'],
-            'original_error': 'Unexpected error in retry loop'
+        # 如果循环正常结束但没有返回，这是一个意外情况
+        st.error("🚨 重试循环意外结束 - 这不应该发生")
+        
+        # 创建详细的错误报告
+        error_analysis = {
+            'pattern': 'retry_loop_completion',
+            'type': 'unexpected_loop_completion',
+            'severity': 'critical',
+            'retry_recommended': False,
+            'solutions': [
+                '重试循环意外完成',
+                '重置客户端状态',
+                '检查系统日志',
+                '联系技术支持'
+            ],
+            'original_error': 'Retry loop completed without return',
+            'context': {
+                'max_retries': max_retries,
+                'final_params': current_params,
+                'error_history': self.session_stats['last_errors'][-max_retries:]
+            }
         }
-        return False, fallback_error, {
+        
+        self.session_stats['failed_requests'] += 1
+        
+        return False, error_analysis, {
             'status': 'failed',
             'attempts': max_retries,
-            'message': '意外的循環結束'
+            'error_type': 'loop_completion_error',
+            'message': '重试循环意外完成'
         }
 
 def show_error_recovery_panel(error_analysis: Dict, diagnostic_info: Dict):
-    """顯示錯誤恢復面板 - 修復版本"""
-    st.subheader("🚨 錯誤診斷和恢復")
+    """显示错误恢复面板 - 增强版本"""
+    st.subheader("🚨 详细错误诊断")
     
-    # 安全獲取錯誤信息
+    # 错误概览
     error_type = error_analysis.get('type', 'unknown_error')
     severity = error_analysis.get('severity', 'medium')
-    solutions = error_analysis.get('solutions', ['嘗試重新生成'])
-    original_error = error_analysis.get('original_error', '未知錯誤')
+    pattern = error_analysis.get('pattern', 'unknown')
     
-    # 錯誤概覽
-    col_error1, col_error2, col_error3 = st.columns(3)
+    # 基本信息显示
+    col1, col2, col3, col4 = st.columns(4)
     
-    with col_error1:
-        severity_color = {
-            'critical': '🔴',
-            'high': '🟠', 
-            'medium': '🟡',
-            'low': '🟢'
+    with col1:
+        severity_colors = {
+            'critical': ('🔴', 'red'),
+            'high': ('🟠', 'orange'), 
+            'medium': ('🟡', 'yellow'),
+            'low': ('🟢', 'green')
         }
-        try:
-            severity_display = f"{severity_color.get(severity, '❓')} {severity.upper()}"
-        except Exception:
-            severity_display = "❓ 未知"
-            
-        st.metric("錯誤嚴重程度", severity_display)
+        icon, color = severity_colors.get(severity, ('❓', 'gray'))
+        st.metric("严重程度", f"{icon} {severity.upper()}")
     
-    with col_error2:
-        try:
-            type_display = error_type.replace('_', ' ').title()
-        except Exception:
-            type_display = "未知錯誤"
-        st.metric("錯誤類型", type_display)
+    with col2:
+        st.metric("错误类型", error_type.replace('_', ' ').title())
     
-    with col_error3:
+    with col3:
+        st.metric("错误模式", pattern.replace('_', ' ').title())
+    
+    with col4:
         attempts = diagnostic_info.get('attempts', 'N/A')
-        st.metric("嘗試次數", str(attempts))
+        st.metric("尝试次数", str(attempts))
     
-    # 詳細錯誤信息
-    with st.expander("🔍 詳細錯誤信息"):
-        st.code(original_error[:1000] + ('...' if len(original_error) > 1000 else ''))
+    # 详细错误信息
+    with st.expander("🔍 完整错误详情", expanded=False):
+        st.markdown("### 原始错误消息")
+        original_error = error_analysis.get('original_error', '未知错误')
+        st.code(original_error)
         
-        try:
-            debug_info = {
-                'error_pattern': error_analysis.get('pattern', 'unknown'),
-                'retry_recommended': error_analysis.get('retry_recommended', True),
-                'diagnostic_status': diagnostic_info.get('status', 'unknown'),
-                'model_attempted': diagnostic_info.get('model_used', 'N/A')
-            }
-            st.json(debug_info)
-        except Exception as e:
-            st.warning(f"無法顯示調試信息: {str(e)}")
+        st.markdown("### 错误上下文")
+        context = error_analysis.get('context', {})
+        if context:
+            st.json(context)
+        else:
+            st.info("无额外上下文信息")
+        
+        st.markdown("### 诊断信息")
+        st.json(diagnostic_info)
+        
+        # 匹配的关键词
+        matched_keywords = error_analysis.get('matched_keywords', [])
+        if matched_keywords:
+            st.markdown("### 匹配的错误关键词")
+            st.write(", ".join(matched_keywords))
     
-    # 解決方案
-    st.subheader("💡 推薦解決方案")
+    # 解决方案
+    st.subheader("💡 推荐解决方案")
+    solutions = error_analysis.get('solutions', ['尝试重新生成'])
     
-    try:
-        for i, solution in enumerate(solutions, 1):
-            st.write(f"{i}. {solution}")
-    except Exception as e:
-        st.error(f"無法顯示解決方案: {str(e)}")
-        st.write("1. 嘗試重新生成圖像")
-        st.write("2. 檢查 API 配置")
-        st.write("3. 聯繫技術支持")
+    for i, solution in enumerate(solutions, 1):
+        if i == 1:
+            st.success(f"**🎯 首选方案:** {solution}")
+        else:
+            st.info(f"**{i}.** {solution}")
     
-    # 快速修復按鈕
-    st.subheader("⚡ 快速修復")
+    # 快速修复操作
+    st.subheader("⚡ 快速修复操作")
     
     col_fix1, col_fix2, col_fix3, col_fix4 = st.columns(4)
     
     with col_fix1:
-        if st.button("🔄 重新嘗試", use_container_width=True):
+        if st.button("🔄 立即重试", use_container_width=True, type="primary"):
             st.session_state.retry_generation = True
+            st.success("准备重试...")
             st.rerun()
     
     with col_fix2:
-        if st.button("🎯 選擇穩定模型", use_container_width=True):
-            # 直接設置為最穩定的模型
-            st.session_state.auto_selected_model = 'flux.1-schnell'
-            st.success("已選擇最穩定模型: flux.1-schnell")
+        if st.button("🛡️ 安全模式", use_container_width=True):
+            # 设置最安全的参数
+            st.session_state.safe_mode_params = {
+                'model': 'flux.1-schnell',
+                'size': '1024x1024',
+                'n': 1
+            }
+            st.success("已启用安全模式")
             st.rerun()
     
     with col_fix3:
-        if st.button("✂️ 簡化提示詞", use_container_width=True):
-            if 'last_prompt' in st.session_state:
-                try:
-                    original = st.session_state.last_prompt
-                    simplified = simplify_prompt(original)
-                    st.session_state.simplified_prompt = simplified
-                    st.info(f"原提示詞: {original[:50]}...")
-                    st.success(f"簡化後: {simplified[:50]}...")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"簡化提示詞失敗: {str(e)}")
-            else:
-                st.warning("沒有找到上次的提示詞")
+        if st.button("🔧 重置客户端", use_container_width=True):
+            # 重置客户端状态
+            if 'resilient_client' in st.session_state:
+                del st.session_state.resilient_client
+            st.success("客户端状态已重置")
+            st.rerun()
     
     with col_fix4:
-        if st.button("🧪 測試 API 連接", use_container_width=True):
-            if 'api_config' in st.session_state and st.session_state.api_config.get('api_key'):
-                try:
-                    test_api_connection()
-                except Exception as e:
-                    st.error(f"API 測試失敗: {str(e)}")
-            else:
-                st.warning("請先配置 API 密鑰")
-
-def simplify_prompt(original_prompt: str) -> str:
-    """簡化提示詞 - 添加錯誤處理"""
-    try:
-        if not isinstance(original_prompt, str):
-            original_prompt = str(original_prompt)
-        
-        # 移除複雜的修飾詞和長句
-        words = original_prompt.split()
-        
-        # 保留核心詞彙
-        core_words = []
-        skip_words = {
-            'extremely', 'highly', 'very', 'incredibly', 'amazingly',
-            'detailed', 'intricate', 'complex', 'sophisticated',
-            'professional', 'cinematic', 'photorealistic', 'ultra-realistic'
-        }
-        
-        for word in words[:15]:  # 限制長度
-            if word.lower() not in skip_words:
-                core_words.append(word)
-        
-        simplified = ' '.join(core_words)
-        
-        # 如果太短，添加基本描述
-        if len(simplified) < 20:
-            simplified += ", simple and clear"
-        
-        return simplified
-        
-    except Exception as e:
-        st.warning(f"簡化提示詞時出錯: {str(e)}")
-        return "A simple image"  # 回退到最基本的提示詞
-
-def test_api_connection():
-    """測試 API 連接 - 增強錯誤處理"""
-    try:
-        if 'api_config' not in st.session_state:
-            st.error("❌ API 配置不存在")
-            return
-            
-        config = st.session_state.api_config
-        api_key = config.get('api_key')
-        base_url = config.get('base_url')
-        
-        if not api_key or not base_url:
-            st.error("❌ API 密鑰或端點未配置")
-            return
-        
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        
-        with st.spinner("測試 API 連接..."):
-            models = client.models.list()
-            st.success(f"✅ API 連接正常，發現 {len(models.data)} 個模型")
-            
-            # 檢查 Flux 模型
-            flux_models = [m.id for m in models.data if 'flux' in m.id.lower()]
-            if flux_models:
-                st.info(f"🎨 可用的 Flux 模型: {', '.join(flux_models[:3])}...")
-            else:
-                st.warning("⚠️ 未發現 Flux 模型")
-                
-    except Exception as e:
-        error_msg = str(e)
-        st.error(f"❌ API 連接測試失敗: {error_msg}")
-        
-        # 提供具體的錯誤建議
-        if "401" in error_msg or "unauthorized" in error_msg.lower():
-            st.warning("💡 建議檢查 API 密鑰是否正確")
-        elif "404" in error_msg or "not found" in error_msg.lower():
-            st.warning("💡 建議檢查 API 端點 URL 是否正確")
-        elif "timeout" in error_msg.lower():
-            st.warning("💡 建議檢查網絡連接")
-
-def show_session_diagnostics():
-    """顯示會話診斷信息 - 增強錯誤處理"""
-    try:
-        if 'resilient_client' not in st.session_state:
-            st.info("尚未初始化彈性客戶端")
-            return
-            
+        if st.button("📞 获取帮助", use_container_width=True):
+            st.session_state.show_help = True
+            st.rerun()
+    
+    # 错误趋势分析
+    if 'resilient_client' in st.session_state:
         client = st.session_state.resilient_client
-        stats = client.session_stats
+        error_types = client.session_stats.get('error_types', {})
         
-        st.subheader("📊 會話診斷")
-        
-        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-        
-        with col_stat1:
-            st.metric("總請求數", stats.get('total_requests', 0))
-        
-        with col_stat2:
-            total_requests = stats.get('total_requests', 0)
-            successful_requests = stats.get('successful_requests', 0)
+        if error_types:
+            st.subheader("📈 错误趋势分析")
             
-            if total_requests > 0:
-                success_rate = successful_requests / total_requests * 100
-            else:
-                success_rate = 0
-                
-            st.metric("成功率", f"{success_rate:.1f}%")
-        
-        with col_stat3:
-            st.metric("失敗次數", stats.get('failed_requests', 0))
-        
-        with col_stat4:
-            st.metric("重試次數", stats.get('retry_attempts', 0))
-        
-        # 建議
-        if success_rate < 50:
-            st.error("🚨 成功率過低，建議檢查 API 配置")
-        elif success_rate < 80:
-            st.warning("⚠️ 成功率不理想，建議優化設置")
-        else:
-            st.success("✅ 系統運行良好")
+            # 显示错误类型分布
+            for error_type, count in sorted(error_types.items(), key=lambda x: x[1], reverse=True):
+                st.write(f"**{error_type}:** {count} 次")
             
-    except Exception as e:
-        st.error(f"顯示診斷信息時出錯: {str(e)}")
+            # 最近错误历史
+            recent_errors = client.session_stats.get('last_errors', [])
+            if recent_errors:
+                with st.expander("📝 最近错误历史"):
+                    for error in recent_errors[-5:]:  # 显示最近5个错误
+                        st.write(f"**{error.get('timestamp', 'Unknown time')}** - {error.get('type', 'Unknown')} (尝试 {error.get('attempt', 'N/A')})")
+                        st.caption(error.get('message', 'No message')[:100])
 
+def show_help_panel():
+    """显示帮助面板"""
+    st.subheader("📞 错误解决帮助")
+    
+    st.markdown("""
+    ### 🔧 常见问题解决方案
+    
+    #### 1. "Unexpected error in retry loop"
+    - **原因**: 重试机制本身出现问题
+    - **解决**: 使用"重置客户端"按钮，然后重新配置API
+    
+    #### 2. 500 服务器错误
+    - **原因**: API提供商服务器临时故障
+    - **解决**: 等待自动重试，或切换到更稳定的模型
+    
+    #### 3. 401/403 认证错误
+    - **原因**: API密钥无效或权限不足
+    - **解决**: 检查API密钥，确认账户余额
+    
+    #### 4. 模型不可用 (404)
+    - **原因**: 选择的模型暂时不可用
+    - **解决**: 切换到 flux.1-schnell (最稳定)
+    
+    #### 5. 参数验证失败
+    - **原因**: 输入参数超出允许范围
+    - **解决**: 使用"安全模式"或简化设置
+    """)
+    
+    st.markdown("""
+    ### 🛡️ 预防措施
+    
+    - **使用稳定模型**: 优先选择 flux.1-schnell
+    - **合理提示词**: 保持在1000字符以内
+    - **标准尺寸**: 使用 1024x1024 最稳定
+    - **少量生成**: 一次生成1-2张图片
+    - **定期测试**: 定期测试API连接状态
+    """)
+    
+    if st.button("✅ 了解了", type="primary"):
+        if 'show_help' in st.session_state:
+            del st.session_state.show_help
+        st.rerun()
+
+# 其他函数保持不变...
 def create_resilient_client() -> Optional[ResilientFluxClient]:
-    """創建彈性客戶端 - 增強錯誤處理"""
+    """创建弹性客户端"""
     try:
         if 'api_config' not in st.session_state or not st.session_state.api_config.get('api_key'):
             return None
@@ -525,12 +634,11 @@ def create_resilient_client() -> Optional[ResilientFluxClient]:
             base_url=config['base_url']
         )
     except Exception as e:
-        st.error(f"創建彈性客戶端失敗: {str(e)}")
+        st.error(f"创建弹性客户端失败: {str(e)}")
         return None
 
-# 初始化 session state
 def init_session_state():
-    """初始化會話狀態"""
+    """初始化会话状态"""
     if 'api_config' not in st.session_state:
         st.session_state.api_config = {
             'provider': 'Navy',
@@ -544,403 +652,211 @@ def init_session_state():
     
     if 'favorite_images' not in st.session_state:
         st.session_state.favorite_images = []
-    
-    if 'model_test_results' not in st.session_state:
-        st.session_state.model_test_results = {}
 
-# API 提供商配置
+# API 和模型配置
 API_PROVIDERS = {
     "Navy": {
         "name": "Navy API",
         "base_url_default": "https://api.navy/v1",
         "key_prefix": "sk-",
-        "description": "Navy 提供的 AI 圖像生成服務",
+        "description": "Navy 提供的 AI 图像生成服务",
         "icon": "⚓"
-    },
-    "OpenAI Compatible": {
-        "name": "OpenAI Compatible API",
-        "base_url_default": "https://api.openai.com/v1",
-        "key_prefix": "sk-",
-        "description": "OpenAI 官方或兼容的 API 服務",
-        "icon": "🤖"
-    },
-    "Custom": {
-        "name": "自定義 API",
-        "base_url_default": "",
-        "key_prefix": "",
-        "description": "自定義的 API 端點",
-        "icon": "🔧"
     }
 }
 
-# Flux 模型配置
 FLUX_MODELS = {
     "flux.1-schnell": {
         "name": "FLUX.1 Schnell",
-        "description": "最快的生成速度，開源模型，最穩定",
+        "description": "最稳定的模型，推荐用于错误恢复",
         "icon": "⚡",
-        "type": "快速生成",
         "reliability": "高"
     },
     "flux.1-krea-dev": {
         "name": "FLUX.1 Krea Dev", 
-        "description": "創意開發版本，適合實驗性生成",
+        "description": "创意开发版本",
         "icon": "🎨",
-        "type": "創意開發",
         "reliability": "中"
     },
     "flux.1.1-pro": {
         "name": "FLUX.1.1 Pro",
-        "description": "改進的旗艦模型，最佳品質",
+        "description": "旗舰模型",
         "icon": "👑",
-        "type": "旗艦版本",
         "reliability": "中"
-    },
-    "flux.1-kontext-pro": {
-        "name": "FLUX.1 Kontext Pro",
-        "description": "支持圖像編輯和上下文理解",
-        "icon": "🔧",
-        "type": "編輯專用",
-        "reliability": "低"
-    },
-    "flux.1-kontext-max": {
-        "name": "FLUX.1 Kontext Max",
-        "description": "最高性能版本，極致品質",
-        "icon": "🚀",
-        "type": "極致性能",
-        "reliability": "低"
     }
 }
 
 def show_api_settings():
-    """顯示 API 設置界面 - 增強錯誤處理"""
-    st.subheader("🔑 API 設置")
+    """显示API设置"""
+    st.subheader("🔑 API 设置")
     
-    try:
-        provider_options = list(API_PROVIDERS.keys())
-        current_provider = st.session_state.api_config.get('provider', 'Navy')
-        
-        selected_provider = st.selectbox(
-            "選擇 API 提供商",
-            options=provider_options,
-            index=provider_options.index(current_provider) if current_provider in provider_options else 0,
-            format_func=lambda x: f"{API_PROVIDERS[x]['icon']} {API_PROVIDERS[x]['name']}"
-        )
-        
-        provider_info = API_PROVIDERS[selected_provider]
-        st.info(f"📋 {provider_info['description']}")
-        
-        current_key = st.session_state.api_config.get('api_key', '')
-        masked_key = '*' * 20 + current_key[-8:] if len(current_key) > 8 else ''
-        
-        api_key_input = st.text_input(
-            "API 密鑰",
-            value="",
-            type="password",
-            placeholder=f"請輸入 {provider_info['name']} 的 API 密鑰...",
-            help=f"API 密鑰通常以 '{provider_info['key_prefix']}' 開頭"
-        )
-        
-        if current_key and not api_key_input:
-            st.caption(f"🔐 當前密鑰: {masked_key}")
-        
-        base_url_input = st.text_input(
-            "API 端點 URL",
-            value=st.session_state.api_config.get('base_url', provider_info['base_url_default']),
-            placeholder=provider_info['base_url_default'],
-            help="API 服務的基礎 URL"
-        )
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            save_btn = st.button("💾 保存設置", type="primary")
-        
-        with col2:
-            test_btn = st.button("🧪 測試連接")
-        
-        with col3:
-            clear_btn = st.button("🗑️ 清除設置", type="secondary")
-        
-        if save_btn:
-            try:
-                if not api_key_input and not current_key:
-                    st.error("❌ 請輸入 API 密鑰")
-                else:
-                    final_api_key = api_key_input if api_key_input else current_key
-                    st.session_state.api_config = {
-                        'provider': selected_provider,
-                        'api_key': final_api_key,
-                        'base_url': base_url_input,
-                        'validated': False
-                    }
-                    st.success("✅ API 設置已保存")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"保存設置時出錯: {str(e)}")
-        
-        if test_btn:
-            try:
-                test_api_key = api_key_input if api_key_input else current_key
-                if test_api_key:
-                    test_api_connection()
-                else:
-                    st.warning("請先輸入 API 密鑰")
-            except Exception as e:
-                st.error(f"測試連接時出錯: {str(e)}")
-        
-        if clear_btn:
-            try:
-                st.session_state.api_config = {
-                    'provider': 'Navy',
-                    'api_key': '',
-                    'base_url': 'https://api.navy/v1',
-                    'validated': False
-                }
-                st.success("🗑️ 設置已清除")
-                st.rerun()
-            except Exception as e:
-                st.error(f"清除設置時出錯: {str(e)}")
-                
-    except Exception as e:
-        st.error(f"API 設置界面出錯: {str(e)}")
+    current_key = st.session_state.api_config.get('api_key', '')
+    
+    api_key_input = st.text_input(
+        "API 密钥",
+        value="",
+        type="password",
+        placeholder="请输入 API 密钥...",
+    )
+    
+    base_url_input = st.text_input(
+        "API 端点",
+        value=st.session_state.api_config.get('base_url', 'https://api.navy/v1'),
+    )
+    
+    if st.button("💾 保存设置", type="primary"):
+        if api_key_input or current_key:
+            st.session_state.api_config = {
+                'provider': 'Navy',
+                'api_key': api_key_input or current_key,
+                'base_url': base_url_input,
+                'validated': False
+            }
+            st.success("✅ 设置已保存")
+            st.rerun()
 
 # 初始化
 init_session_state()
-
-# 創建彈性客戶端
 resilient_client = create_resilient_client()
 api_configured = resilient_client is not None
 
-# 側邊欄
-with st.sidebar:
-    try:
+# 主界面
+st.title("🎨 Flux AI 图像生成器 Pro - 详细错误修复版")
+
+# 帮助面板检查
+if st.session_state.get('show_help', False):
+    show_help_panel()
+else:
+    # 侧边栏
+    with st.sidebar:
         show_api_settings()
         
-        st.markdown("---")
         if api_configured:
-            st.success("🟢 增強 API 已配置")
-            provider = st.session_state.api_config.get('provider', 'Unknown')
-            st.caption(f"使用: {API_PROVIDERS.get(provider, {}).get('name', provider)}")
+            st.success("🟢 API 已配置")
+            
+            # 显示客户端统计
+            stats = resilient_client.session_stats
+            if stats['total_requests'] > 0:
+                success_rate = stats['successful_requests'] / stats['total_requests'] * 100
+                st.metric("成功率", f"{success_rate:.1f}%")
+                
+                if stats['error_types']:
+                    st.subheader("⚠️ 错误统计")
+                    for error_type, count in list(stats['error_types'].items())[:3]:
+                        st.write(f"• {error_type}: {count}次")
         else:
             st.error("🔴 API 未配置")
-        
-        st.markdown("### 🛡️ 錯誤恢復")
-        if st.button("🔄 重置錯誤狀態", use_container_width=True):
-            try:
-                if 'error_state' in st.session_state:
-                    del st.session_state.error_state
-                st.success("錯誤狀態已重置")
-                st.rerun()
-            except Exception as e:
-                st.error(f"重置錯誤狀態失敗: {str(e)}")
-                
-    except Exception as e:
-        st.error(f"側邊欄出錯: {str(e)}")
-
-# 主頁面
-st.title("🎨 Flux AI 圖像生成器 Pro - 修復版")
-
-if not api_configured:
-    st.error("⚠️ 請先配置 API 密鑰")
-    st.info("👈 在側邊欄中配置 API 設置以開始使用")
-else:
-    try:
-        # 存儲彈性客戶端到 session state
+    
+    # 主生成界面
+    if not api_configured:
+        st.error("⚠️ 请先配置 API 密钥")
+    else:
         st.session_state.resilient_client = resilient_client
         
-        # 主要生成界面
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.subheader("🎯 智能模型選擇")
+            st.subheader("🎯 图像生成")
             
-            # 按可靠性排序模型
-            sorted_models = sorted(
-                FLUX_MODELS.items(),
-                key=lambda x: {'高': 0, '中': 1, '低': 2}.get(x[1].get('reliability', '低'), 2)
-            )
-            
-            selected_model = st.selectbox(
-                "選擇模型 (按可靠性排序)",
-                options=[m[0] for m in sorted_models],
-                format_func=lambda x: f"{FLUX_MODELS[x]['icon']} {FLUX_MODELS[x]['name']} - 可靠性: {FLUX_MODELS[x]['reliability']}",
-                index=0
-            )
-            
-            # 自動選擇檢查
-            if 'auto_selected_model' in st.session_state:
-                selected_model = st.session_state.auto_selected_model
-                del st.session_state.auto_selected_model
-            
-            model_info = FLUX_MODELS[selected_model]
-            
-            reliability_color = {'高': '🟢', '中': '🟡', '低': '🔴'}
-            st.info(
-                f"已選擇: {model_info['icon']} {model_info['name']} "
-                f"{reliability_color[model_info['reliability']]} 可靠性: {model_info['reliability']}"
-            )
-            
-            # 提示詞輸入
-            st.subheader("✏️ 輸入提示詞")
-            
-            # 簡化提示詞檢查
-            default_prompt = ""
-            if 'simplified_prompt' in st.session_state:
-                default_prompt = st.session_state.simplified_prompt
-                del st.session_state.simplified_prompt
-                st.success("✂️ 使用簡化後的提示詞")
+            # 安全模式检查
+            if 'safe_mode_params' in st.session_state:
+                safe_params = st.session_state.safe_mode_params
+                st.success("🛡️ 安全模式已启用")
+                
+                selected_model = safe_params.get('model', 'flux.1-schnell')
+                selected_size = safe_params.get('size', '1024x1024')
+                num_images = safe_params.get('n', 1)
+                
+                del st.session_state.safe_mode_params
+            else:
+                # 正常选择
+                selected_model = st.selectbox(
+                    "选择模型",
+                    options=list(FLUX_MODELS.keys()),
+                    format_func=lambda x: f"{FLUX_MODELS[x]['icon']} {FLUX_MODELS[x]['name']} (可靠性: {FLUX_MODELS[x]['reliability']})",
+                    index=0
+                )
+                
+                selected_size = st.selectbox(
+                    "图像尺寸",
+                    options=['1024x1024', '1152x896', '896x1152'],
+                    index=0
+                )
+                
+                num_images = st.slider("生成数量", 1, 3, 1)
             
             prompt = st.text_area(
-                "描述你想要生成的圖像",
-                value=default_prompt,
-                height=120,
+                "输入提示词",
+                height=100,
                 placeholder="例如: A simple cat sitting on a table"
             )
             
-            # 保存提示詞到 session state
-            if prompt:
-                st.session_state.last_prompt = prompt
-            
-            # 高級設定
-            with st.expander("🔧 高級設定"):
-                col_size, col_num = st.columns(2)
-                
-                with col_size:
-                    size_options = {
-                        "1024x1024": "正方形 (1:1) - 最穩定",
-                        "1152x896": "橫向 (4:3.5)", 
-                        "896x1152": "直向 (3.5:4)",
-                    }
-                    
-                    selected_size = st.selectbox(
-                        "圖像尺寸",
-                        options=list(size_options.keys()),
-                        format_func=lambda x: size_options[x],
-                        index=0
-                    )
-                
-                with col_num:
-                    num_images = st.slider("生成數量", 1, 2, 1, help="減少數量提高穩定性")
-            
-            # 生成按鈕
             generate_btn = st.button(
-                "🚀 增強生成圖像",
+                "🚀 生成图像",
                 type="primary",
-                use_container_width=True,
                 disabled=not prompt.strip()
             )
             
-            # 重試檢查
-            if 'retry_generation' in st.session_state:
+            # 重试检查
+            if st.session_state.get('retry_generation', False):
                 generate_btn = True
                 del st.session_state.retry_generation
         
         with col2:
-            st.subheader("🛡️ 錯誤恢復系統")
+            st.subheader("🛡️ 系统状态")
+            st.success("✅ 增强错误处理已启用")
+            st.info("🔧 详细错误诊断")
+            st.info("🔄 智能重试机制")
+            st.info("🎯 自动参数优化")
             
-            st.success("✅ 增強錯誤處理已啟用")
-            st.markdown("""
-            **修復功能:**
-            - 🛡️ KeyError 防護
-            - 🔄 智能重試機制
-            - 🎯 自動模型回退
-            - 📊 實時錯誤分析  
-            - 💡 智能解決方案
-            """)
-            
-            # 顯示會話診斷
-            show_session_diagnostics()
-            
-            st.subheader("💡 使用建議")
-            st.markdown("""
-            **避免錯誤:**
-            - 使用高可靠性模型
-            - 簡化提示詞內容
-            - 選擇標準圖像尺寸
-            - 減少生成數量
-            
-            **錯誤恢復:**
-            1. 自動錯誤診斷
-            2. 智能重試策略
-            3. 模型自動回退
-            4. 用戶引導修復
-            """)
-
-        # 增強的生成邏輯
+            if resilient_client.session_stats['total_requests'] > 0:
+                st.subheader("📊 会话统计")
+                stats = resilient_client.session_stats
+                st.write(f"总请求: {stats['total_requests']}")
+                st.write(f"成功: {stats['successful_requests']}")
+                st.write(f"失败: {stats['failed_requests']}")
+                st.write(f"重试: {stats['retry_attempts']}")
+        
+        # 生成逻辑
         if generate_btn and prompt.strip():
-            st.subheader("🔄 生成進度")
+            st.subheader("🔄 生成进度")
             
-            try:
-                generation_params = {
-                    "model": selected_model,
-                    "prompt": prompt,
-                    "n": num_images,
-                    "size": selected_size
-                }
+            generation_params = {
+                "model": selected_model,
+                "prompt": prompt,
+                "n": num_images,
+                "size": selected_size
+            }
+            
+            success, result, diagnostic_info = resilient_client.generate_with_resilience(**generation_params)
+            
+            if success:
+                response = result
+                st.success(f"✨ 生成成功! {diagnostic_info.get('message', '')}")
                 
-                # 使用彈性客戶端生成
-                success, result, diagnostic_info = resilient_client.generate_with_resilience(**generation_params)
-                
-                if success:
-                    # 成功處理
-                    response = result
-                    st.success(f"✨ 生成成功! {diagnostic_info.get('message', '')}")
+                for i, image_data in enumerate(response.data):
+                    st.subheader(f"图像 {i+1}")
                     
-                    # 顯示圖像
-                    for i, image_data in enumerate(response.data):
-                        st.subheader(f"圖像 {i+1}")
+                    try:
+                        img_response = requests.get(image_data.url)
+                        img = Image.open(BytesIO(img_response.content))
+                        st.image(img, use_container_width=True)
                         
-                        try:
-                            img_response = requests.get(image_data.url)
-                            img = Image.open(BytesIO(img_response.content))
-                            st.image(img, use_container_width=True)
-                            
-                            # 下載按鈕
-                            img_buffer = BytesIO()
-                            img.save(img_buffer, format='PNG')
-                            st.download_button(
-                                label=f"📥 下載圖像 {i+1}",
-                                data=img_buffer.getvalue(),
-                                file_name=f"flux_generated_{i+1}.png",
-                                mime="image/png",
-                                key=f"download_{i}"
-                            )
-                        except Exception as img_error:
-                            st.error(f"顯示圖像 {i+1} 時出錯: {str(img_error)}")
-                
-                else:
-                    # 失敗處理
-                    error_analysis = result
-                    st.error(f"❌ 生成失敗: {error_analysis.get('type', 'unknown')}")
-                    
-                    # 顯示錯誤恢復面板
-                    show_error_recovery_panel(error_analysis, diagnostic_info)
-                    
-                    # 記錄失敗到 session state
-                    st.session_state.error_state = {
-                        'error_analysis': error_analysis,
-                        'diagnostic_info': diagnostic_info,
-                        'timestamp': datetime.datetime.now()
-                    }
-                    
-            except Exception as generation_error:
-                st.error(f"生成過程中發生意外錯誤: {str(generation_error)}")
-                st.info("請嘗試刷新頁面或重新配置 API")
-                
-    except Exception as main_error:
-        st.error(f"主頁面發生錯誤: {str(main_error)}")
-        st.info("請刷新頁面重試")
+                        # 下载按钮
+                        img_buffer = BytesIO()
+                        img.save(img_buffer, format='PNG')
+                        st.download_button(
+                            label=f"📥 下载图像 {i+1}",
+                            data=img_buffer.getvalue(),
+                            file_name=f"flux_generated_{i+1}.png",
+                            mime="image/png"
+                        )
+                    except Exception as img_error:
+                        st.error(f"显示图像失败: {str(img_error)}")
+            else:
+                error_analysis = result
+                st.error(f"❌ 生成失败: {error_analysis.get('type', 'unknown')}")
+                show_error_recovery_panel(error_analysis, diagnostic_info)
 
-# 頁腳
+# 页脚
 st.markdown("---")
-st.markdown(
-    """
-    <div style='text-align: center; color: #666;'>
-        🛡️ <strong>Flux AI 圖像生成器 Pro - 修復版</strong><br>
-        🔧 KeyError 修復 | 🔄 智能重試 | 🎯 自動回退 | 📊 錯誤分析<br>
-        專為解決各種錯誤而優化
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+st.markdown("🛡️ **Flux AI 图像生成器 Pro - 详细错误修复版** | 🔧 完整错误诊断 | 🔄 智能重试 | 💡 详细解决方案")
